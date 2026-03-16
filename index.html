@@ -3,7 +3,7 @@ import { Play, Square, Activity, Hand, X, Minus, Sparkles, Zap, Waves, Music, Vi
 
 // --- Specialized Synthesis Engines ---
 
-const playGlassHarp = (ctx, time, compressor, freq) => {
+const playGlassHarp = (ctx, time, output, freq) => {
   const osc = ctx.createOscillator();
   const gain = ctx.createGain();
   const filter = ctx.createBiquadFilter();
@@ -16,12 +16,12 @@ const playGlassHarp = (ctx, time, compressor, freq) => {
   gain.gain.exponentialRampToValueAtTime(0.001, time + 2.0);
   osc.connect(filter);
   filter.connect(gain);
-  gain.connect(compressor);
+  gain.connect(output);
   osc.start(time);
   osc.stop(time + 2.1);
 };
 
-const playLiquidLead = (ctx, time, compressor, freq) => {
+const playLiquidLead = (ctx, time, output, freq) => {
   const osc = ctx.createOscillator();
   const gain = ctx.createGain();
   const filter = ctx.createBiquadFilter();
@@ -35,12 +35,12 @@ const playLiquidLead = (ctx, time, compressor, freq) => {
   gain.gain.exponentialRampToValueAtTime(0.001, time + 0.2);
   osc.connect(filter);
   filter.connect(gain);
-  gain.connect(compressor);
+  gain.connect(output);
   osc.start(time);
   osc.stop(time + 0.2);
 };
 
-const playSuperSaw = (ctx, time, compressor, freq) => {
+const playSuperSaw = (ctx, time, output, freq) => {
   const group = ctx.createGain();
   group.gain.setValueAtTime(0.12, time);
   group.gain.exponentialRampToValueAtTime(0.001, time + 0.6);
@@ -54,10 +54,10 @@ const playSuperSaw = (ctx, time, compressor, freq) => {
     osc.start(time);
     osc.stop(time + 0.6);
   });
-  group.connect(compressor);
+  group.connect(output);
 };
 
-const playMetalPluck = (ctx, time, compressor, freq) => {
+const playMetalPluck = (ctx, time, output, freq) => {
   const osc1 = ctx.createOscillator();
   const osc2 = ctx.createOscillator();
   const gain = ctx.createGain();
@@ -78,7 +78,7 @@ const playMetalPluck = (ctx, time, compressor, freq) => {
   osc1.connect(filter);
   osc2.connect(filter);
   filter.connect(gain);
-  gain.connect(compressor);
+  gain.connect(output);
 
   osc1.start(time);
   osc2.start(time);
@@ -86,7 +86,7 @@ const playMetalPluck = (ctx, time, compressor, freq) => {
   osc2.stop(time + 0.15);
 };
 
-const playDrum = (ctx, time, compressor, type, variant = 'standard') => {
+const playDrum = (ctx, time, output, type, variant = 'standard') => {
   const osc = ctx.createOscillator();
   const gain = ctx.createGain();
   
@@ -103,7 +103,7 @@ const playDrum = (ctx, time, compressor, type, variant = 'standard') => {
   }
   
   osc.connect(gain);
-  gain.connect(compressor);
+  gain.connect(output);
   osc.start(time);
   osc.stop(time + 0.8);
 };
@@ -209,31 +209,102 @@ export default function App() {
   const [isTracking, setIsTracking] = useState(false);
   const [trackingLoading, setTrackingLoading] = useState(false);
   const [handPresent, setHandPresent] = useState(false);
+  const [mixerHandPresent, setMixerHandPresent] = useState(false);
   const [mutes, setMutes] = useState({ kick: false, hat: false, clap: false, bass: false });
   const [showPresetsMenu, setShowPresetsMenu] = useState(false);
+  const [activeQuadrant, setActiveQuadrant] = useState(null);
 
   const audioCtxRef = useRef(null);
-  const compressorRef = useRef(null);
   const nextNoteTimeRef = useRef(0);
   const current16thNoteRef = useRef(0);
   const timerIDRef = useRef(null);
   const notesInQueueRef = useRef([]);
+
+  // FX Nodes
+  const masterGainRef = useRef(null);
+  const filterNodeRef = useRef(null);
+  const crunchNodeRef = useRef(null);
+  const cleanPassRef = useRef(null);
+  const distortionGainRef = useRef(null);
+  const reverbNodeRef = useRef(null);
 
   const videoRef = useRef(null);
   const canvasRef = useRef(null);
   const cameraInstRef = useRef(null);
   const handsInstRef = useRef(null);
 
-  const stateRef = useRef({ bpm, grid, mutes, activePreset, isTracking, handPresent });
+  const stateRef = useRef({ bpm, grid, mutes, activePreset, isTracking, handPresent, activeQuadrant });
   useEffect(() => {
-    stateRef.current = { bpm, grid, mutes, activePreset, isTracking, handPresent };
-  }, [bpm, grid, mutes, activePreset, isTracking, handPresent]);
+    stateRef.current = { bpm, grid, mutes, activePreset, isTracking, handPresent, activeQuadrant };
+  }, [bpm, grid, mutes, activePreset, isTracking, handPresent, activeQuadrant]);
+
+  // Audio Engine Initialization with FX Chain
+  const initAudio = () => {
+    if (!audioCtxRef.current) {
+      const ctx = new (window.AudioContext || window.webkitAudioContext)();
+      audioCtxRef.current = ctx;
+
+      const masterGain = ctx.createGain();
+      masterGain.gain.value = 0.8;
+      
+      const filter = ctx.createBiquadFilter();
+      filter.type = 'lowpass';
+      filter.frequency.value = 20000;
+      filter.Q.value = 1;
+
+      // Parallel crunch routing: signal -> filter -> split(clean vs distortion) -> master
+      const crunch = ctx.createWaveShaper();
+      const makeDistortionCurve = (amount) => {
+        let k = amount, n_samples = 44100, curve = new Float32Array(n_samples), i = 0, x;
+        for ( ; i < n_samples; ++i ) {
+          x = i * 2 / n_samples - 1;
+          curve[i] = ( (3 + k) * x * 20 * (Math.PI / 180) ) / ( Math.PI + k * Math.abs(x) );
+        }
+        return curve;
+      };
+      crunch.curve = makeDistortionCurve(400); 
+
+      const cleanPass = ctx.createGain();
+      cleanPass.gain.value = 1.0;
+      
+      const distGain = ctx.createGain();
+      distGain.gain.value = 0; // Off by default
+
+      const delay = ctx.createDelay();
+      delay.delayTime.value = 0.25;
+      const feedback = ctx.createGain();
+      feedback.gain.value = 0; 
+      delay.connect(feedback);
+      feedback.connect(delay);
+
+      // routing chain: source -> filter
+      filter.connect(cleanPass);
+      filter.connect(crunch);
+      crunch.connect(distGain);
+      
+      cleanPass.connect(masterGain);
+      distGain.connect(masterGain);
+      
+      masterGain.connect(ctx.destination);
+      
+      filter.connect(delay);
+      delay.connect(masterGain);
+
+      masterGainRef.current = masterGain;
+      filterNodeRef.current = filter;
+      crunchNodeRef.current = crunch;
+      cleanPassRef.current = cleanPass;
+      distortionGainRef.current = distGain;
+      reverbNodeRef.current = feedback;
+    }
+    return audioCtxRef.current;
+  };
 
   const scheduleNote = useCallback((stepNumber, time) => {
     notesInQueueRef.current.push({ note: stepNumber, time: time });
     const { grid: curGrid, mutes: curMutes, activePreset: curKey } = stateRef.current;
     const ctx = audioCtxRef.current;
-    const comp = compressorRef.current;
+    const output = filterNodeRef.current;
     const preset = PRESETS[curKey];
 
     const getFreq = (trackId) => {
@@ -243,23 +314,23 @@ export default function App() {
 
     if (curGrid.kick[stepNumber] && !curMutes.kick) {
       const engine = preset.tracks[0].engine;
-      if (engine === 'kick') playDrum(ctx, time, comp, 'kick');
-      if (engine === 'kick-brutal') playDrum(ctx, time, comp, 'kick', 'brutal');
-      if (engine === 'harp') playGlassHarp(ctx, time, comp, getFreq('kick'));
+      if (engine === 'kick') playDrum(ctx, time, output, 'kick');
+      if (engine === 'kick-brutal') playDrum(ctx, time, output, 'kick', 'brutal');
+      if (engine === 'harp') playGlassHarp(ctx, time, output, getFreq('kick'));
     }
     if (curGrid.hat[stepNumber] && !curMutes.hat) {
       const engine = preset.tracks[1].engine;
       const freq = getFreq('hat');
-      if (engine === 'supersaw') playSuperSaw(ctx, time, comp, freq);
-      if (engine === 'harp') playGlassHarp(ctx, time, comp, freq);
-      if (engine === 'liquid') playLiquidLead(ctx, time, comp, freq);
-      if (engine === 'metal-pluck') playMetalPluck(ctx, time, comp, freq);
+      if (engine === 'supersaw') playSuperSaw(ctx, time, output, freq);
+      if (engine === 'harp') playGlassHarp(ctx, time, output, freq);
+      if (engine === 'liquid') playLiquidLead(ctx, time, output, freq);
+      if (engine === 'metal-pluck') playMetalPluck(ctx, time, output, freq);
     }
     if (curGrid.clap[stepNumber] && !curMutes.clap) {
       const engine = preset.tracks[2].engine;
-      if (engine === 'snare') playDrum(ctx, time, comp, 'snare');
-      if (engine === 'snare-fast') playDrum(ctx, time, comp, 'snare', 'fast');
-      if (engine === 'harp') playGlassHarp(ctx, time, comp, getFreq('clap'));
+      if (engine === 'snare') playDrum(ctx, time, output, 'snare');
+      if (engine === 'snare-fast') playDrum(ctx, time, output, 'snare', 'fast');
+      if (engine === 'harp') playGlassHarp(ctx, time, output, getFreq('clap'));
     }
     if (curGrid.bass[stepNumber] && !curMutes.bass) {
       const engine = preset.tracks[3].engine;
@@ -271,7 +342,7 @@ export default function App() {
       g.gain.setValueAtTime(0.3, time);
       g.gain.exponentialRampToValueAtTime(0.01, time + 0.2);
       osc.connect(g);
-      g.connect(comp);
+      g.connect(output);
       osc.start(time);
       osc.stop(time + 0.2);
     }
@@ -288,13 +359,9 @@ export default function App() {
   }, [scheduleNote]);
 
   const startEngine = () => {
-    if (!audioCtxRef.current) {
-      audioCtxRef.current = new (window.AudioContext || window.webkitAudioContext)();
-      compressorRef.current = audioCtxRef.current.createDynamicsCompressor();
-      compressorRef.current.connect(audioCtxRef.current.destination);
-    }
-    audioCtxRef.current.resume();
-    nextNoteTimeRef.current = audioCtxRef.current.currentTime + 0.05;
+    const ctx = initAudio();
+    ctx.resume();
+    nextNoteTimeRef.current = ctx.currentTime + 0.05;
     scheduler();
     setIsPlaying(true);
   };
@@ -307,15 +374,50 @@ export default function App() {
     notesInQueueRef.current = [];
   };
 
+  // HAND START LOGIC: Now Left Hand is the primary switch (Mixer)
   useEffect(() => {
     if (isTracking) {
-      if (handPresent && !isPlaying) {
+      if (mixerHandPresent && !isPlaying) {
         startEngine();
-      } else if (!handPresent && isPlaying) {
+      } else if (!mixerHandPresent && isPlaying) {
         stopEngine();
       }
     }
-  }, [handPresent, isTracking, isPlaying]);
+  }, [mixerHandPresent, isTracking, isPlaying]);
+
+  // Audio Filter Logic
+  useEffect(() => {
+    if (!audioCtxRef.current) return;
+    const ctx = audioCtxRef.current;
+    const fNode = filterNodeRef.current;
+    const rNode = reverbNodeRef.current;
+    const cleanNode = cleanPassRef.current;
+    const distGainNode = distortionGainRef.current;
+
+    // Reset Defaults
+    fNode.frequency.setTargetAtTime(20000, ctx.currentTime, 0.1);
+    fNode.Q.setTargetAtTime(1, ctx.currentTime, 0.1);
+    fNode.type = 'lowpass';
+    rNode.gain.setTargetAtTime(0, ctx.currentTime, 0.1);
+    cleanNode.gain.setTargetAtTime(1, ctx.currentTime, 0.1);
+    distGainNode.gain.setTargetAtTime(0, ctx.currentTime, 0.1);
+    
+    // Filters applied by Right Hand (Active Quadrant)
+    if (activeQuadrant === 1) { // ECHO: Top Left
+      rNode.gain.setTargetAtTime(0.7, ctx.currentTime, 0.1);
+    } else if (activeQuadrant === 2) { // CRUNCH: Top Right
+      fNode.type = 'bandpass';
+      fNode.frequency.setTargetAtTime(1200, ctx.currentTime, 0.1);
+      fNode.Q.setTargetAtTime(20, ctx.currentTime, 0.1);
+      cleanNode.gain.setTargetAtTime(0, ctx.currentTime, 0.1); 
+      distGainNode.gain.setTargetAtTime(1.2, ctx.currentTime, 0.1); 
+    } else if (activeQuadrant === 3) { // LOWPASS: Bottom Left
+      fNode.frequency.setTargetAtTime(400, ctx.currentTime, 0.1);
+    } else if (activeQuadrant === 4) { // RESO: Bottom Right
+      fNode.frequency.setTargetAtTime(3000, ctx.currentTime, 0.1);
+      fNode.Q.setTargetAtTime(30, ctx.currentTime, 0.1);
+    }
+  }, [activeQuadrant]);
 
   useEffect(() => {
     let animationFrame;
@@ -346,7 +448,7 @@ export default function App() {
         });
 
         handsModule.setOptions({ 
-          maxNumHands: 1, 
+          maxNumHands: 2, 
           modelComplexity: 1, 
           minDetectionConfidence: 0.5, 
           minTrackingConfidence: 0.5 
@@ -361,18 +463,48 @@ export default function App() {
           
           if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
             setHandPresent(true);
-            const landmarks = results.multiHandLandmarks[0];
-            window.drawConnectors(canvasCtx, landmarks, window.HAND_CONNECTIONS, {color: '#FF69B4', lineWidth: 2});
-            window.drawLandmarks(canvasCtx, landmarks, {color: '#FFFFFF', lineWidth: 1, radius: 3});
-            
-            setMutes({
-              kick: landmarks[8].y > landmarks[6].y,
-              hat: landmarks[12].y > landmarks[10].y,
-              clap: landmarks[16].y > landmarks[14].y,
-              bass: landmarks[20].y > landmarks[18].y
+            let localQuadrant = null;
+            let currentMutes = { kick: false, hat: false, clap: false, bass: false };
+            let foundMixerHand = false;
+
+            results.multiHandLandmarks.forEach((landmarks, index) => {
+              const label = results.multiHandedness[index].label; 
+              
+              window.drawConnectors(canvasCtx, landmarks, window.HAND_CONNECTIONS, {
+                color: label === 'Left' ? '#FF69B4' : '#00CED1', 
+                lineWidth: 2
+              });
+              window.drawLandmarks(canvasCtx, landmarks, {color: '#FFFFFF', lineWidth: 1, radius: 3});
+              
+              // SWAPPED LOGIC:
+              // Left Hand (User Perspective Left, Camera Right) -> MIXER
+              // Right Hand (User Perspective Right, Camera Left) -> FILTER
+              
+              if (label === 'Left') {
+                foundMixerHand = true;
+                currentMutes = {
+                  kick: landmarks[8].y > landmarks[6].y,
+                  hat: landmarks[12].y > landmarks[10].y,
+                  clap: landmarks[16].y > landmarks[14].y,
+                  bass: landmarks[20].y > landmarks[18].y
+                };
+              } else {
+                const x = landmarks[9].x; 
+                const y = landmarks[9].y;
+                if (x < 0.5 && y < 0.5) localQuadrant = 1;
+                else if (x >= 0.5 && y < 0.5) localQuadrant = 2;
+                else if (x < 0.5 && y >= 0.5) localQuadrant = 3;
+                else if (x >= 0.5 && y >= 0.5) localQuadrant = 4;
+              }
             });
+            
+            setMixerHandPresent(foundMixerHand);
+            setMutes(currentMutes);
+            setActiveQuadrant(localQuadrant);
           } else {
             setHandPresent(false);
+            setMixerHandPresent(false);
+            setActiveQuadrant(null);
           }
           canvasCtx.restore();
         });
@@ -401,6 +533,8 @@ export default function App() {
       if (camera) camera.stop();
       if (handsModule) handsModule.close();
       setHandPresent(false);
+      setMixerHandPresent(false);
+      setActiveQuadrant(null);
     };
   }, [isTracking]);
 
@@ -441,24 +575,13 @@ export default function App() {
     setShowPresetsMenu(false);
   };
 
-  // Theme Constants
-  const THEME = {
-    teal: "#00CED1",
-    pink: "#FF69B4",
-    brown: "#3D1C02",
-    mint: "#98FF98",
-    desert: "#F5DEB3",
-    borderLight: "#FFFFFF",
-    borderDark: "#3D1C02"
-  };
-
   return (
     <div className="min-h-screen bg-[#00CED1] text-[#3D1C02] font-sans p-4 flex flex-col items-center justify-center overflow-hidden">
       
       {/* Main Container */}
       <div className="relative w-full max-w-3xl bg-[#F5DEB3] border-t-2 border-l-2 border-white border-b-2 border-r-2 border-[#3D1C02] shadow-[4px_4px_10px_rgba(61,28,2,0.5)] flex flex-col">
         
-        {/* Windows Title Bar (Candy Pink) */}
+        {/* Windows Title Bar */}
         <div className="bg-[#FF69B4] text-white px-2 py-1 flex items-center justify-between font-bold text-sm">
           <div className="flex items-center gap-2">
             <Globe size={14} className="text-white" /> 
@@ -512,8 +635,8 @@ export default function App() {
                     <span className={`font-bold ${isPlaying ? 'text-[#FF69B4]' : 'text-[#3D1C02]/40'}`}>{isPlaying ? 'CONNECTED' : 'IDLE'}</span>
                   </div>
                   <div className="flex justify-between items-center text-[9px]">
-                    <span className="text-[#3D1C02]/60">PORT:</span>
-                    <span className="font-bold text-[#3D1C02]">8080</span>
+                    <span className="text-[#3D1C02]/60">DUAL_HAND:</span>
+                    <span className="font-bold text-[#3D1C02]">{isTracking ? 'ENABLED' : 'OFF'}</span>
                   </div>
                </div>
             </div>
@@ -573,6 +696,19 @@ export default function App() {
           {/* Main Work Area */}
           <div className="flex-1 p-3 bg-[#98FF98]/10 shadow-[inset_1px_1px_2px_rgba(61,28,2,0.3)]">
             
+            {/* Audio Filter Display */}
+            <div className="mb-2">
+              <div className="text-[10px] font-bold text-[#3D1C02]/60 uppercase mb-1 flex items-center gap-1">
+                Audio_Filter (Right_Hand_FX)
+              </div>
+              <div className="grid grid-cols-4 gap-1 p-1 bg-[#F5DEB3] border-t border-l border-[#3D1C02] border-b border-white border-r border-white">
+                <div className={`text-[9px] text-center p-1 border border-[#3D1C02]/20 font-mono transition-colors ${activeQuadrant === 1 ? 'bg-[#FF69B4] text-white' : 'bg-white/40 opacity-40'}`}>ECHO</div>
+                <div className={`text-[9px] text-center p-1 border border-[#3D1C02]/20 font-mono transition-colors ${activeQuadrant === 2 ? 'bg-[#FF69B4] text-white' : 'bg-white/40 opacity-40'}`}>CRUNCH</div>
+                <div className={`text-[9px] text-center p-1 border border-[#3D1C02]/20 font-mono transition-colors ${activeQuadrant === 3 ? 'bg-[#FF69B4] text-white' : 'bg-white/40 opacity-40'}`}>LOWPASS</div>
+                <div className={`text-[9px] text-center p-1 border border-[#3D1C02]/20 font-mono transition-colors ${activeQuadrant === 4 ? 'bg-[#FF69B4] text-white' : 'bg-white/40 opacity-40'}`}>RESO</div>
+              </div>
+            </div>
+
             <div className="flex flex-col sm:flex-row gap-4 mb-4 items-start sm:items-end">
               <div className="flex-1 w-full">
                 <div className="text-[10px] font-bold text-[#3D1C02]/60 uppercase mb-1 flex items-center gap-1">
@@ -605,7 +741,7 @@ export default function App() {
             <div className="bg-white border-t-2 border-l-2 border-[#3D1C02] border-b border-white border-r border-white p-3 shadow-inner overflow-x-auto">
               <div className="mb-2 text-[10px] font-mono font-bold text-[#FF69B4] flex justify-between uppercase">
                 <span>Mixer_Output: {PRESETS[activePreset].label}</span>
-                <span>Active_Osc</span>
+                <span>Left_Hand_Control</span>
               </div>
               <div className="min-w-[440px] space-y-2">
                 {tracks.map((track) => (
@@ -643,7 +779,7 @@ export default function App() {
             {/* Bottom Actions */}
             <div className="mt-3 flex justify-between items-center text-[10px] font-bold text-[#3D1C02]/50 uppercase">
               <div className="flex gap-4">
-                <span className="flex items-center gap-1 bg-[#F5DEB3] px-2 py-0.5 border border-[#3D1C02]"><Info size={10} /> Mode: {isTracking ? 'HANDS' : 'MOUSE'}</span>
+                <span className="flex items-center gap-1 bg-[#F5DEB3] px-2 py-0.5 border border-[#3D1C02]"><Info size={10} /> Mode: {isTracking ? 'DUAL_HAND' : 'MOUSE'}</span>
               </div>
               <button 
                 onClick={() => setGrid({kick: Array(16).fill(0), hat: Array(16).fill(0), clap: Array(16).fill(0), bass: Array(16).fill(0)})}
