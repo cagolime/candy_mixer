@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { Play, Square, Activity, Hand, X, Minus, Sparkles, Zap, Waves, Music, Video, Terminal, AlertTriangle, Eye, Info, Search, Globe, Shield, ChevronDown } from 'lucide-react';
+import { Play, Square, Activity, Hand, X, Minus, Sparkles, Zap, Waves, Music, Video, Terminal, AlertTriangle, Eye, Info, Search, Globe, Shield, ChevronDown, HelpCircle } from 'lucide-react';
 
 // --- Specialized Synthesis Engines ---
 
@@ -84,6 +84,68 @@ const playMetalPluck = (ctx, time, output, freq) => {
   osc2.start(time);
   osc1.stop(time + 0.15);
   osc2.stop(time + 0.15);
+};
+
+// --- Classical Synthesis ---
+
+const playViolin = (ctx, time, output, freq) => {
+  const osc = ctx.createOscillator();
+  const gain = ctx.createGain();
+  const lfo = ctx.createOscillator();
+  const lfoGain = ctx.createGain();
+  
+  osc.type = 'sawtooth';
+  osc.frequency.setValueAtTime(freq, time);
+  
+  // Vibrato
+  lfo.frequency.setValueAtTime(5, time);
+  lfoGain.gain.setValueAtTime(freq * 0.01, time);
+  lfo.connect(lfoGain);
+  lfoGain.connect(osc.frequency);
+  
+  gain.gain.setValueAtTime(0, time);
+  gain.gain.linearRampToValueAtTime(0.15, time + 0.1);
+  gain.gain.linearRampToValueAtTime(0.1, time + 0.4);
+  gain.gain.exponentialRampToValueAtTime(0.001, time + 0.8);
+  
+  osc.connect(gain);
+  gain.connect(output);
+  lfo.start(time);
+  osc.start(time);
+  osc.stop(time + 0.8);
+  lfo.stop(time + 0.8);
+};
+
+const playPiano = (ctx, time, output, freq) => {
+  const osc = ctx.createOscillator();
+  const gain = ctx.createGain();
+  osc.type = 'triangle';
+  osc.frequency.setValueAtTime(freq, time);
+  gain.gain.setValueAtTime(0.2, time);
+  gain.gain.exponentialRampToValueAtTime(0.001, time + 1.0);
+  osc.connect(gain);
+  gain.connect(output);
+  osc.start(time);
+  osc.stop(time + 1.0);
+};
+
+const playFrenchHorn = (ctx, time, output, freq) => {
+  const osc = ctx.createOscillator();
+  const gain = ctx.createGain();
+  const filter = ctx.createBiquadFilter();
+  osc.type = 'sawtooth';
+  osc.frequency.setValueAtTime(freq, time);
+  filter.type = 'lowpass';
+  filter.frequency.setValueAtTime(200, time);
+  filter.frequency.exponentialRampToValueAtTime(800, time + 0.2);
+  gain.gain.setValueAtTime(0, time);
+  gain.gain.linearRampToValueAtTime(0.2, time + 0.1);
+  gain.gain.linearRampToValueAtTime(0.001, time + 0.6);
+  osc.connect(filter);
+  filter.connect(gain);
+  gain.connect(output);
+  osc.start(time);
+  osc.stop(time + 0.6);
 };
 
 const playDrum = (ctx, time, output, type, variant = 'standard') => {
@@ -196,6 +258,28 @@ const PRESETS = {
       clap: [0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0],
       bass: [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1],
     }
+  },
+  p5: {
+    label: "Preset 5: Classical",
+    bpm: 90,
+    scales: {
+      kick: [293.66, 329.63, 349.23, 392.00], // D4 Major
+      hat: [587.33, 659.25, 698.46, 783.99],
+      clap: [440.00, 493.88],
+      bass: [146.83, 146.83, 196.00, 174.61]
+    },
+    tracks: [
+      { id: 'kick', name: 'violin', color: 'bg-[#A0522D]', engine: 'violin' }, 
+      { id: 'hat', name: 'harp', color: 'bg-[#FFD700]', engine: 'harp' }, 
+      { id: 'clap', name: 'piano', color: 'bg-[#FFFFFF]', engine: 'piano' }, 
+      { id: 'bass', name: 'horn', color: 'bg-[#CD7F32]', engine: 'horn' }, 
+    ],
+    grid: {
+      kick: [1, 0, 1, 0, 1, 1, 1, 0, 1, 0, 1, 0, 1, 1, 0, 0],
+      hat:  [1, 1, 1, 1, 0, 0, 0, 0, 1, 1, 1, 1, 0, 0, 0, 0],
+      clap: [0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 1, 0, 1, 0],
+      bass: [1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0],
+    }
   }
 };
 
@@ -212,6 +296,7 @@ export default function App() {
   const [mixerHandPresent, setMixerHandPresent] = useState(false);
   const [mutes, setMutes] = useState({ kick: false, hat: false, clap: false, bass: false });
   const [showPresetsMenu, setShowPresetsMenu] = useState(false);
+  const [showInfoMenu, setShowInfoMenu] = useState(false);
   const [activeQuadrant, setActiveQuadrant] = useState(null);
 
   const audioCtxRef = useRef(null);
@@ -312,11 +397,13 @@ export default function App() {
       return scale[stepNumber % scale.length];
     };
 
+    // Note: preset.tracks indexing matches current tracks array order
     if (curGrid.kick[stepNumber] && !curMutes.kick) {
       const engine = preset.tracks[0].engine;
       if (engine === 'kick') playDrum(ctx, time, output, 'kick');
       if (engine === 'kick-brutal') playDrum(ctx, time, output, 'kick', 'brutal');
       if (engine === 'harp') playGlassHarp(ctx, time, output, getFreq('kick'));
+      if (engine === 'violin') playViolin(ctx, time, output, getFreq('kick'));
     }
     if (curGrid.hat[stepNumber] && !curMutes.hat) {
       const engine = preset.tracks[1].engine;
@@ -331,20 +418,25 @@ export default function App() {
       if (engine === 'snare') playDrum(ctx, time, output, 'snare');
       if (engine === 'snare-fast') playDrum(ctx, time, output, 'snare', 'fast');
       if (engine === 'harp') playGlassHarp(ctx, time, output, getFreq('clap'));
+      if (engine === 'piano') playPiano(ctx, time, output, getFreq('clap'));
     }
     if (curGrid.bass[stepNumber] && !curMutes.bass) {
       const engine = preset.tracks[3].engine;
       const freq = getFreq('bass');
-      const osc = ctx.createOscillator();
-      const g = ctx.createGain();
-      osc.type = engine === 'deep-bass' ? 'sine' : 'sawtooth';
-      osc.frequency.setValueAtTime(freq, time);
-      g.gain.setValueAtTime(0.3, time);
-      g.gain.exponentialRampToValueAtTime(0.01, time + 0.2);
-      osc.connect(g);
-      g.connect(output);
-      osc.start(time);
-      osc.stop(time + 0.2);
+      if (engine === 'horn') {
+        playFrenchHorn(ctx, time, output, freq);
+      } else {
+        const osc = ctx.createOscillator();
+        const g = ctx.createGain();
+        osc.type = engine === 'deep-bass' ? 'sine' : 'sawtooth';
+        osc.frequency.setValueAtTime(freq, time);
+        g.gain.setValueAtTime(0.3, time);
+        g.gain.exponentialRampToValueAtTime(0.01, time + 0.2);
+        osc.connect(g);
+        g.connect(output);
+        osc.start(time);
+        osc.stop(time + 0.2);
+      }
     }
   }, []);
 
@@ -374,7 +466,7 @@ export default function App() {
     notesInQueueRef.current = [];
   };
 
-  // HAND START LOGIC: Now Left Hand is the primary switch (Mixer)
+  // HAND START LOGIC: Left Hand Mixer
   useEffect(() => {
     if (isTracking) {
       if (mixerHandPresent && !isPlaying) {
@@ -402,7 +494,6 @@ export default function App() {
     cleanNode.gain.setTargetAtTime(1, ctx.currentTime, 0.1);
     distGainNode.gain.setTargetAtTime(0, ctx.currentTime, 0.1);
     
-    // Filters applied by Right Hand (Active Quadrant)
     if (activeQuadrant === 1) { // ECHO: Top Left
       rNode.gain.setTargetAtTime(0.7, ctx.currentTime, 0.1);
     } else if (activeQuadrant === 2) { // CRUNCH: Top Right
@@ -475,10 +566,6 @@ export default function App() {
                 lineWidth: 2
               });
               window.drawLandmarks(canvasCtx, landmarks, {color: '#FFFFFF', lineWidth: 1, radius: 3});
-              
-              // SWAPPED LOGIC:
-              // Left Hand (User Perspective Left, Camera Right) -> MIXER
-              // Right Hand (User Perspective Right, Camera Left) -> FILTER
               
               if (label === 'Left') {
                 foundMixerHand = true;
@@ -595,30 +682,52 @@ export default function App() {
         </div>
 
         {/* Menu Bar */}
-        <div className="relative flex px-2 py-0.5 bg-[#F5DEB3] border-b border-[#3D1C02]">
-          <button 
-            onClick={() => setShowPresetsMenu(!showPresetsMenu)}
-            className={`flex items-center gap-1 px-2 py-0.5 text-xs hover:bg-[#FF69B4] hover:text-white group ${showPresetsMenu ? 'bg-[#FF69B4] text-white' : ''}`}
-          >
-            <span className="underline decoration-1 underline-offset-2">P</span>resets
-            <ChevronDown size={10} className={showPresetsMenu ? 'text-white' : 'text-[#3D1C02] group-hover:text-white'} />
-          </button>
-          
-          {showPresetsMenu && (
-            <div className="absolute top-full left-2 z-50 w-48 bg-[#F5DEB3] border-t border-l border-white border-b-2 border-r-2 border-[#3D1C02] shadow-lg">
-              {Object.keys(PRESETS).map((key) => (
-                <button
-                  key={key}
-                  onClick={() => applyPreset(key)}
-                  className={`w-full text-left px-4 py-1.5 text-xs hover:bg-[#FF69B4] hover:text-white flex items-center justify-between
-                    ${activePreset === key ? 'bg-[#98FF98] font-bold' : ''}`}
-                >
-                  {PRESETS[key].label}
-                  {activePreset === key && <div className="w-2 h-2 rounded-full bg-[#3D1C02]"></div>}
-                </button>
-              ))}
-            </div>
-          )}
+        <div className="relative flex px-2 py-0.5 bg-[#F5DEB3] border-b border-[#3D1C02] gap-1">
+          {/* Presets Dropdown */}
+          <div className="relative">
+            <button 
+              onClick={() => { setShowPresetsMenu(!showPresetsMenu); setShowInfoMenu(false); }}
+              className={`flex items-center gap-1 px-2 py-0.5 text-xs hover:bg-[#FF69B4] hover:text-white group ${showPresetsMenu ? 'bg-[#FF69B4] text-white' : ''}`}
+            >
+              <span className="underline decoration-1 underline-offset-2">P</span>resets
+              <ChevronDown size={10} className={showPresetsMenu ? 'text-white' : 'text-[#3D1C02] group-hover:text-white'} />
+            </button>
+            
+            {showPresetsMenu && (
+              <div className="absolute top-full left-0 z-50 w-48 bg-[#F5DEB3] border-t border-l border-white border-b-2 border-r-2 border-[#3D1C02] shadow-lg">
+                {Object.keys(PRESETS).map((key) => (
+                  <button
+                    key={key}
+                    onClick={() => applyPreset(key)}
+                    className={`w-full text-left px-4 py-1.5 text-xs hover:bg-[#FF69B4] hover:text-white flex items-center justify-between
+                      ${activePreset === key ? 'bg-[#98FF98] font-bold' : ''}`}
+                  >
+                    {PRESETS[key].label}
+                    {activePreset === key && <div className="w-2 h-2 rounded-full bg-[#3D1C02]"></div>}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+
+          {/* Info Dropdown */}
+          <div className="relative">
+            <button 
+              onClick={() => { setShowInfoMenu(!showInfoMenu); setShowPresetsMenu(false); }}
+              className={`flex items-center gap-1 px-2 py-0.5 text-xs hover:bg-[#FF69B4] hover:text-white group ${showInfoMenu ? 'bg-[#FF69B4] text-white' : ''}`}
+            >
+              <span className="underline decoration-1 underline-offset-2">I</span>nstructions
+              <ChevronDown size={10} className={showInfoMenu ? 'text-white' : 'text-[#3D1C02] group-hover:text-white'} />
+            </button>
+            
+            {showInfoMenu && (
+              <div className="absolute top-full left-0 z-50 w-64 bg-[#F5DEB3] border-t border-l border-white border-b-2 border-r-2 border-[#3D1C02] shadow-lg p-2">
+                <div className="bg-white border-t border-l border-[#3D1C02] border-b border-white border-r border-white p-2 text-[10px] font-mono leading-tight text-[#3D1C02]">
+                  welcome to caro's mixer. to use this interface, make sure your browser has access to your camera. when ready, activate the eye, and hold your right palm to the screen. test out lowering and raising different fingers. left hand controls the audio filters. by placing your left hand in different quadrants of the camera, you can switch the filter. your left hand will be useless without the right hand mixer controls. enjoy!
+                </div>
+              </div>
+            )}
+          </div>
         </div>
 
         {/* Sidebar + Main Content */}
@@ -699,7 +808,7 @@ export default function App() {
             {/* Audio Filter Display */}
             <div className="mb-2">
               <div className="text-[10px] font-bold text-[#3D1C02]/60 uppercase mb-1 flex items-center gap-1">
-                Audio_Filter (Right_Hand_FX)
+                Audio_Filter (Left_Hand_FX)
               </div>
               <div className="grid grid-cols-4 gap-1 p-1 bg-[#F5DEB3] border-t border-l border-[#3D1C02] border-b border-white border-r border-white">
                 <div className={`text-[9px] text-center p-1 border border-[#3D1C02]/20 font-mono transition-colors ${activeQuadrant === 1 ? 'bg-[#FF69B4] text-white' : 'bg-white/40 opacity-40'}`}>ECHO</div>
@@ -741,7 +850,7 @@ export default function App() {
             <div className="bg-white border-t-2 border-l-2 border-[#3D1C02] border-b border-white border-r border-white p-3 shadow-inner overflow-x-auto">
               <div className="mb-2 text-[10px] font-mono font-bold text-[#FF69B4] flex justify-between uppercase">
                 <span>Mixer_Output: {PRESETS[activePreset].label}</span>
-                <span>Left_Hand_Control</span>
+                <span>Right_Hand_Control</span>
               </div>
               <div className="min-w-[440px] space-y-2">
                 {tracks.map((track) => (
